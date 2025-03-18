@@ -12,8 +12,7 @@ This repository provides a reference implementation of HI-DR as described in the
 
 ### Overview of HI-DR
 
-![image-20250318155721664](C:\Users\Hojung Shin\AppData\Roaming\Typora\typora-user-images\image-20250318155721664.png)
-
+![image](https://github.com/user-attachments/assets/cf536c7d-c076-4345-ab75-2e4c6ef3754f)
 
 
 ### Authors
