@@ -23,8 +23,8 @@ topk = args.topk
 
 os.makedirs(os.path.join("Pretrain_embedding_codes/final_top_embedding", model_name), exist_ok=True)
 
-# nsert the visits corresponding to the indices (another visit). Only insert the embeddings of the selected index visits.
-def select_index_cosine_sim_visit_emb(data_train, best_epoch_embedding, model_name, data_type, epoch): # , data_path):
+
+def select_index_cosine_sim_visit_emb(data_train, best_epoch_embedding, model_name, data_type, epoch, train_embeddings=None): # , data_path):
     # dim1 = 64
     # dim2 = 71
     # cos_linear1 = nn.Linear(dim1,1).to(device='cuda')
@@ -53,34 +53,178 @@ def select_index_cosine_sim_visit_emb(data_train, best_epoch_embedding, model_na
     # print("concat_all_emb: ", concat_all_emb)
 
     # cosine similarity
-    # cos_sim = F.cosine_similarity(concat_all_emb.unsqueeze(1), concat_all_emb.unsqueeze(0), dim=2)
-    chunk_size = 10  
-    cos_sim = torch.zeros_like(concat_all_emb.matmul(concat_all_emb.t()))  # Initialize matrices to store the results.
+    # if data_type == 'train', calculate similarity within itself and own previous visits
+    if data_type == 'train':
+        chunk_size = 10
+        cos_sim = torch.zeros_like(concat_all_emb.matmul(concat_all_emb.t()))
 
-    for i in range(0, concat_all_emb.size(0), chunk_size):
-        chunk_emb = concat_all_emb[i:i+chunk_size]
-        cos_sim_chunk = F.cosine_similarity(chunk_emb.unsqueeze(1), concat_all_emb.unsqueeze(0), dim=2)
-        cos_sim[i:i+chunk_size] = cos_sim_chunk
+        for i in range(0, concat_all_emb.size(0), chunk_size):
+            chunk_emb = concat_all_emb[i:i+chunk_size]
+            cos_sim_chunk = F.cosine_similarity(chunk_emb.unsqueeze(1), concat_all_emb.unsqueeze(0), dim=2)
+            cos_sim[i:i+chunk_size] = cos_sim_chunk
 
-    # emove the diagonal elements from the cosine similarity matrix (similarity with oneself is not needed).
-    cos_sim.fill_diagonal_(0)
+        cos_sim.fill_diagonal_(0)
+        
+        total_visit = []
+        for index, patient in enumerate(data_train):
+            total_visit.append(len(patient))
+        
+        split_tensors = []
+        start_index = 0
+        for num in total_visit:
+            end_index = start_index + num
+            split_tensors.append(concat_all_emb[start_index:end_index])
+            start_index = end_index
+        
+        global_visit_idx = 0
+        for patient_idx, patient_emb in enumerate(split_tensors):
+            num_visits = patient_emb.size(0)
+            
+            for visit_idx in range(num_visits):
+                current_visit_idx = global_visit_idx + visit_idx
+                
+                patient_start_idx = global_visit_idx
+                patient_end_idx = global_visit_idx + num_visits
+                
+                cos_sim[current_visit_idx, current_visit_idx] = 0
+                
+                if visit_idx < num_visits - 1:
+                    future_start_idx = global_visit_idx + visit_idx + 1
+                    future_end_idx = global_visit_idx + num_visits
+                    cos_sim[current_visit_idx, future_start_idx:future_end_idx] = 0
+                
+                if visit_idx > 0:
+                    pass
+                else:
+                    cos_sim[current_visit_idx, patient_start_idx:patient_end_idx] = 0
+            
+            global_visit_idx += num_visits
+    else:
+        if train_embeddings is None:
+            raise ValueError("train_embeddings must be provided for eval/test data")
+        
+        if isinstance(train_embeddings, list):
+            concat_train_emb = []
+            for index, patient in enumerate(train_embeddings):
+                concat_train_emb.append(patient)
+            concat_train_emb = torch.cat(concat_train_emb)
+            print("Processed train embeddings shape:", concat_train_emb.shape)
+        else:
+            concat_train_emb = train_embeddings
+        
+        chunk_size = 10
+        cos_sim_train = torch.zeros(concat_all_emb.size(0), concat_train_emb.size(0), device=concat_all_emb.device)
 
-    # Obtain the indices of embeddings corresponding to the top-10 rows with the highest similarity.
+        for i in range(0, concat_all_emb.size(0), chunk_size):
+            chunk_emb = concat_all_emb[i:i+chunk_size]
+            cos_sim_chunk = F.cosine_similarity(chunk_emb.unsqueeze(1), concat_train_emb.unsqueeze(0), dim=2)
+            cos_sim_train[i:i+chunk_size] = cos_sim_chunk
+        
+        cos_sim_own = torch.zeros(concat_all_emb.size(0), concat_all_emb.size(0), device=concat_all_emb.device)
+        
+        total_visit = []
+        for index, patient in enumerate(data_train):
+            total_visit.append(len(patient))
+        
+        split_tensors = []
+        start_index = 0
+        for num in total_visit:
+            end_index = start_index + num
+            split_tensors.append(concat_all_emb[start_index:end_index])
+            start_index = end_index
+        
+        global_visit_idx = 0
+        total_visits_eval = sum(total_visit)
+        
+        for patient_idx, patient_emb in enumerate(split_tensors):
+            num_visits = patient_emb.size(0)
+            
+            for visit_idx in range(num_visits):
+                current_visit_idx = global_visit_idx + visit_idx
+                
+                if visit_idx > 0:
+                    current_visit_emb = concat_all_emb[current_visit_idx:current_visit_idx+1]  # [1, 64]
+                    
+                    previous_visits_start = global_visit_idx
+                    previous_visits_end = global_visit_idx + visit_idx
+                    previous_visits_emb = concat_all_emb[previous_visits_start:previous_visits_end]  # [visit_idx, 64]
+                    
+                    if previous_visits_emb.size(0) > 0:
+                        sim_with_own = F.cosine_similarity(current_visit_emb.unsqueeze(1), previous_visits_emb.unsqueeze(0), dim=2)  # [1, visit_idx]
+                        cos_sim_own[current_visit_idx, previous_visits_start:previous_visits_end] = sim_with_own.squeeze(0)
+                            
+            global_visit_idx += num_visits
+                
+        combined_embeddings = torch.cat([concat_train_emb, concat_all_emb], dim=0)
+        cos_sim_combined = torch.cat([cos_sim_train, cos_sim_own], dim=1)
+        
+        print("Combined embeddings shape:", combined_embeddings.shape)
+        print("Combined similarity matrix shape:", cos_sim_combined.shape)
+
     topk = args.topk # 100
-    top_sim, top_idx = torch.topk(cos_sim, topk, dim=1)
+    
+    if data_type == 'train':
+        top_sim, top_idx = torch.topk(cos_sim, topk, dim=1)
+    else:
+        top_sim, top_idx = torch.topk(cos_sim_combined, topk, dim=1)
+    
     # print("top_10_sim: ", top_10_sim)
     # print("top_100_idx: ", top_idx)
     top_idx_np = top_idx.cpu().numpy()
-    top_emb = concat_all_emb.index_select(0, top_idx.view(-1)).view(concat_all_emb.shape[0], topk, -1) ## (row_size,top-k,-1)
+    
+    top_sim_np = top_sim.detach().cpu().numpy()
+    avg_cosine_sim = np.mean(top_sim_np)
+    print(f"Average cosine similarity for top-{topk} indices ({data_type}): {avg_cosine_sim:.4f}")
+    
+    jaccard_similarities = []
+    data_train_visits = data_visits(data_train)
+    
+    for i, idx_set in enumerate(top_idx_np):
+        if i < len(data_train_visits):
+            current_visit_meds = set(data_train_visits[i][2])
+            
+            visit_jaccard_sims = []
+            for neighbor_idx in idx_set:
+                if neighbor_idx < len(data_train_visits):
+                    neighbor_visit_meds = set(data_train_visits[neighbor_idx][2])
+                    
+                    intersection = len(current_visit_meds.intersection(neighbor_visit_meds))
+                    union = len(current_visit_meds.union(neighbor_visit_meds))
+                    
+                    if union > 0:
+                        jaccard_sim = intersection / union
+                        visit_jaccard_sims.append(jaccard_sim)
+                    else:
+                        visit_jaccard_sims.append(0.0)
+            
+            if visit_jaccard_sims:
+                avg_jaccard = np.mean(visit_jaccard_sims)
+                jaccard_similarities.append(avg_jaccard)
+    
+    if jaccard_similarities:
+        avg_jaccard_sim = np.mean(jaccard_similarities)
+        print(f"Average Jaccard similarity for medication sets ({data_type}): {avg_jaccard_sim:.4f}")
+    else:
+        print(f"No valid Jaccard similarities calculated for {data_type}")
+    
+    if data_type == 'train':
+        top_emb = concat_all_emb.index_select(0, top_idx.view(-1)).view(concat_all_emb.shape[0], topk, -1) ## (row_size,top-k,-1)
+    else:
+        train_emb_size = concat_train_emb.size(0)
+        
+        top_idx_device = top_idx.to(combined_embeddings.device)
+        top_emb = combined_embeddings.index_select(0, top_idx_device.view(-1)).view(concat_all_emb.shape[0], topk, -1)
+    
     print("top_emb: ", top_emb.shape)
     print("top_idx_np: ", top_idx_np.shape)
     print("top_idx_np: ", top_idx_np)
     # ### --- save --- ###
     # # dill.dump(top_emb, open(os.path.join('Pretrain_embedding_codes/final_top_embedding', 'final_top_embedding_%s_data_type_%s_epoch_%s.pkl' % (model_name, data_type, epoch)), 'wb'))
-    dill.dump(top_idx_np, open(os.path.join('Pretrain_embedding_codes/final_top_embedding', model_name ,'final_top_%d_index_%s_%s_epoch_%s.pkl' % (topk, model_name, data_type, epoch)), 'wb'))    
+    dill.dump(top_idx_np, open(os.path.join('Pretrain_embedding_codes/final_top_embedding', model_name ,'final_top_%d_index_%s_%s_epoch_%s.pkl' % (topk, model_name, data_type, epoch)), 'wb'))
 
-    test_vita_model_input(data_train, top_idx_np)
-    
+    test_vita_model_input(data_train, top_idx_np, data_type, train_embeddings)
+
+
 
 def select_index_cosine_sim_visit_emb_only_past(data_train, best_epoch_embedding, model_name, data_type, epoch): # , data_path):
     # dim1 = 64
@@ -226,7 +370,7 @@ def data_visits(data_train):
     # print("visit_med_list: ", len(visit_med_list_train))
     return data_train_visits
     
-def test_vita_model_input(data_train, top_idx_np):
+def test_vita_model_input(data_train, top_idx_np, data_type='train', train_embeddings=None):
     def model(seq_input,sim_visits_emb,sim_visits_med):
         print("---input model-----")
         # print("\nseq_input: ",len(seq_input))
@@ -250,7 +394,20 @@ def test_vita_model_input(data_train, top_idx_np):
     # Retrieve the elements from visit_med_list corresponding to each index set.
     # top_10_meds = [visit_med_list[idx_set] for i, idx_set in enumerate(top_10_idx_np)]
     # top_10_meds = [[visit_med_list[i][idx] for idx in idx_set] for i, idx_set in enumerate(top_10_idx_np)]
-    top_visits = [[data_train_visits[idx] for idx in idx_set] for i, idx_set in enumerate(top_idx_np)]
+    
+    # For eval/test, we need to handle the index mapping properly
+    if data_type in ['eval', 'test']:
+        # Map indices: if index < len(data_train_visits), use data_train_visits, otherwise skip
+        top_visits = []
+        for i, idx_set in enumerate(top_idx_np):
+            visit_set = []
+            for idx in idx_set:
+                if idx < len(data_train_visits):
+                    visit_set.append(data_train_visits[idx])
+            top_visits.append(visit_set)
+    else:
+        # For train, use data_train_visits directly
+        top_visits = [[data_train_visits[idx] for idx in idx_set] for i, idx_set in enumerate(top_idx_np)]
 
     print("top_visits: ", len(top_visits))
     # for i in top_meds:
@@ -305,14 +462,15 @@ def data_visit_num(data, final_top_idx_GAMENet_another_pretrain_for_embedding_1_
             if all(item in visit_num for item in cut_result) == True: saved_index.append(index)
     print("saved_index: ", saved_index)
 
+    return total_visit
 
-    return total_visit                  
+
 def main():
-    device = torch.device('cpu')
+    device = torch.device('cuda')
     tic = time.time()
     print(device)
 
-    records_final_path = 'data/records_final.pkl'
+    records_final_path = '../../data/records_final.pkl'
     
     data=dill.load(open(records_final_path, 'rb'))
     
@@ -326,23 +484,25 @@ def main():
 
     print ('training time: {}'.format(time.time() - tic))
     
-    best_epoch_embedding_train_path = 'HEIDR/Pretrain_embedding_codes/saved_embedding/train/VITA_another_pretrain_for_embedding_make_query_gumbel_08_att_10/Epoch_29_patient_embedding_train.pkl'
-    best_epoch_embedding_eval_path = 'HEIDR/Pretrain_embedding_codes/saved_embedding/eval/VITA_another_pretrain_for_embedding_make_query_gumbel_08_att_10/Epoch_29_patient_embedding_eval.pkl'
-    best_epoch_embedding_test_path = 'HEIDR/Pretrain_embedding_codes/saved_embedding/test/VITA_another_pretrain_for_embedding_make_query_gumbel_08_att_10/patient_embedding_test.pkl'
+    # Insert best epoch embedding from VITA_another_pretrain_main.py
+    best_epoch_embedding_train_path = 'Pretrain_embedding_codes/saved_embedding/train/Epoch_40_patient_embedding_train.pkl'
+    best_epoch_embedding_eval_path = 'Pretrain_embedding_codes/saved_embedding/eval/Epoch_40_patient_embedding_eval.pkl'
+    best_epoch_embedding_test_path = 'Pretrain_embedding_codes/saved_embedding/test/Epoch_40_patient_embedding_test.pkl'
     best_epoch_embedding_train=dill.load(open(best_epoch_embedding_train_path, 'rb'))
     best_epoch_embedding_eval=dill.load(open(best_epoch_embedding_eval_path, 'rb'))
     best_epoch_embedding_test=dill.load(open(best_epoch_embedding_test_path, 'rb'))
     
     ## Insert only the visits corresponding to the selected indices.
     model_name = args.model_name # 'VITA_another_pretrain_for_embedding_top_100_1'
-    epoch = args.epoch # 27
-    select_index_cosine_sim_visit_emb_only_past(data_train, best_epoch_embedding_train, model_name = model_name, data_type='train', epoch=epoch) # , data_path='RefineGraphNet/data/pretrain_saved/change_index_to_visit_epoch_28_loss_1_select_another_pateint_index_train.pkl')
-    # select_index_cosine_sim_visit_emb(data_eval,best_epoch_embedding_eval, model_name = model_name, data_type='eval', epoch=epoch) # , data_path='RefineGraphNet/data/pretrain_saved/change_index_to_visit_epoch_28_loss_1_select_another_pateint_index_eval.pkl')
-    # select_index_cosine_sim_visit_emb(data_test,best_epoch_embedding_test, model_name = model_name, data_type='test', epoch=epoch) # , data_path='RefineGraphNet/data/pretrain_saved/change_index_to_visit_epoch_28_loss_1_select_another_pateint_index_test.pkl')
+    epoch = args.epoch
+    # select_index_cosine_sim_visit_emb_only_past(data_train, best_epoch_embedding_train, model_name = model_name, data_type='train', epoch=epoch) # , data_path='RefineGraphNet/data/pretrain_saved/change_index_to_visit_epoch_28_loss_1_select_another_pateint_index_train.pkl')
+    select_index_cosine_sim_visit_emb(data_train,best_epoch_embedding_train, model_name = model_name, data_type='train', epoch=epoch) # , data_path='RefineGraphNet/data/pretrain_saved/change_index_to_visit_epoch_28_loss_1_select_another_pateint_index_train.pkl')
+    select_index_cosine_sim_visit_emb(data_eval,best_epoch_embedding_eval, model_name = model_name, data_type='eval', epoch=epoch, train_embeddings=best_epoch_embedding_train) # , data_path='RefineGraphNet/data/pretrain_saved/change_index_to_visit_epoch_28_loss_1_select_another_pateint_index_eval.pkl')
+    select_index_cosine_sim_visit_emb(data_test,best_epoch_embedding_test, model_name = model_name, data_type='test', epoch=epoch, train_embeddings=best_epoch_embedding_train) # , data_path='RefineGraphNet/data/pretrain_saved/change_index_to_visit_epoch_28_loss_1_select_another_pateint_index_test.pkl')
     # test_gamenet_model_input(data_train, final_top_embedding_data_type_train_epoch_7)
     # test_gamenet_model_input(data_eval, final_top_embedding_data_type_eval_epoch_7)
     # test_gamenet_model_input(data_test, final_top_embedding_data_type_test_epoch_7)
-    print("---끝---")
+    print("---Done---")
    
 if __name__ == '__main__':
     main()
