@@ -1,3 +1,4 @@
+import os
 import collections
 import torch
 import torch.nn as nn
@@ -10,7 +11,7 @@ from torch.nn import CrossEntropyLoss
 from torch.optim import Adam
 from torch.utils import data
 from loss import cross_entropy_loss
-import os
+
 import torch.nn.functional as F
 import random
 from collections import defaultdict
@@ -27,11 +28,11 @@ from recommend_heidr import eval, test
 
 torch.manual_seed(1203)
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
-model_name = '' 
+model_name = ''
 past_name = 'past'
-resume_path = '' 
+resume_path = ''
 
 
 # Training settings
@@ -154,8 +155,32 @@ def main(args):
     print("data_test_visits: ", len(data_test_visits))
 
     top_visits_train = [[data_train_visits[idx] for idx in idx_set] for i, idx_set in enumerate(final_top_idx_data_type_train)] 
-    top_visits_eval = [[data_eval_visits[idx] for idx in idx_set] for i, idx_set in enumerate(final_top_idx_data_type_eval)] 
-    top_visits_test = [[data_test_visits[idx] for idx in idx_set] for i, idx_set in enumerate(final_top_idx_data_type_test)] 
+    
+    # For eval
+    top_visits_eval = []
+    for i, idx_set in enumerate(final_top_idx_data_type_eval):
+        visit_set = []
+        for idx in idx_set:
+            if idx < len(data_train_visits):
+                visit_set.append(data_train_visits[idx])
+            else:
+                eval_idx = idx - len(data_train_visits)
+                if eval_idx < len(data_eval_visits):
+                    visit_set.append(data_eval_visits[eval_idx])
+        top_visits_eval.append(visit_set)
+    
+    top_visits_test = []
+    for i, idx_set in enumerate(final_top_idx_data_type_test):
+        visit_set = []
+        for idx in idx_set:
+            if idx < len(data_train_visits):
+                visit_set.append(data_train_visits[idx])
+            else:
+                test_idx = idx - len(data_train_visits)
+                if test_idx < len(data_test_visits):
+                    visit_set.append(data_test_visits[test_idx])
+        top_visits_test.append(visit_set) 
+
     print("top_visits_train: ", len(top_visits_train) , "\ntop_visits_eval: ", len(top_visits_eval), "\ntop_visits_test: ", len(top_visits_test))
     voc_size = (len(diag_voc.idx2word), len(pro_voc.idx2word), len(med_voc.idx2word))
     
@@ -196,6 +221,7 @@ def main(args):
                 else:
                     
                     adm_list = []
+                    # until present visit
                     seq_input = input[:idx+1]
                     seq_input = seq_input[:-1] + top_visits_test[patient_count][:args.topk]  + [seq_input[-1]]
            
@@ -223,8 +249,8 @@ def main(args):
                     isnan_list = [np.isnan(i) for i in [ddi_rate,avg_ja, avg_prauc, avg_precision, avg_recall, avg_f1, avg_med]]
                     if True not in isnan_list:
                         result.append([ddi_rate, avg_ja, avg_prauc, avg_precision, avg_recall, avg_f1, avg_med])
-                        llprint('\nJaccard: {}, PRAUC: {}, AVG_F1: {}, DDI Rate: {}, AVG_PRC: {}, AVG_RECALL: {}, AVG_MED: {}\n'.format(
-                                avg_ja, avg_prauc, avg_f1, ddi_rate, avg_precision, avg_recall, avg_med))
+                        # llprint('\nJaccard: {}, PRAUC: {}, AVG_F1: {}, DDI Rate: {}, AVG_PRC: {}, AVG_RECALL: {}, AVG_MED: {}\n'.format(
+                        #         avg_ja, avg_prauc, avg_f1, ddi_rate, avg_precision, avg_recall, avg_med))
                     predicted_med.append(smm_record)
                     all_people.append(gumbel_pick_index)
                     all_score.append(cross_visit_scores_numpy)
@@ -252,7 +278,7 @@ def main(args):
     history = defaultdict(list)
     best_epoch, best_ja = 0, 0
 
-    EPOCH = 200
+    EPOCH = 100
     print("EPOCH: ", EPOCH)
     temp_min = 0.5
     ANNEAL_RATE = 0.000003
@@ -311,15 +337,15 @@ def main(args):
                         loss_record.append(loss.item())
                         loss.backward()
                         optimizer.step()
-                        llprint('\rencoder_gumbel_training step: {} / {}'.format(step, len(data_train)))
+                        #llprint('\rencoder_gumbel_training step: {} / {}'.format(step, len(data_train)))
             gumble_list.append(patient_list)
             
             # gumbel tau schedule 
-            if step % 100 == 0:
+            # if step % 100 == 0:
                 #model.gumbel_tau = np.maximum(model.gumbel_tau * np.exp(-ANNEAL_RATE * step), temp_min)
                 #model.att_tau = np.minimum(model.att_tau * np.exp(ANNEAL_RATE2 * step), temp_max)
-                print(" New Gumbel Temperature: {}".format(model.gumbel_tau))
-                print(" New Attention Temperature: {}".format(model.att_tau))
+                # print(" New Gumbel Temperature: {}".format(model.gumbel_tau))
+                # print(" New Attention Temperature: {}".format(model.att_tau))
                 
          
         dill.dump(gumble_list, open(os.path.join('HEIDR/saved', model_name, past_name,'{}_epoch_train_gumbel_pick.pkl'.format(epoch)), 'wb'))
