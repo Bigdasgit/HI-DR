@@ -1,6 +1,7 @@
 # HI-DR: Exploiting Health Status-Aware Attention and an EHR Graph+ for Effective Medication Recommendation
 
-
+> [!IMPORTANT]
+> **This code was updated on Aug 8.**
 
 This repository provides a reference implementation of HI-DR as described in the following paper:
 
